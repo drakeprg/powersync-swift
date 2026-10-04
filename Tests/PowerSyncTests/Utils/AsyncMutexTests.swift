@@ -120,4 +120,25 @@ struct AsyncSemaphoreTests {
         let _ = consume grant1
         try (await third.result).get()
     }
+
+    /// Returning a grant while waiters are being cancelled must never deadlock: resuming a waiter
+    /// takes its task's status-record lock, and cancelling a waiter holds that lock while its
+    /// `onCancel` takes the wait node's and the semaphore's locks. Resuming under the semaphore
+    /// lock inverted that order (a returning grant, an acquiring waiter holding its node lock, and a
+    /// cancelling thread each waiting on the next).
+    @Test(.timeLimit(.minutes(1))) func returningWhileWaitersAreCancelledNeverDeadlocks() async throws {
+        for round in 0..<3000 {
+            let semaphore = AsyncSemaphore(from: ["x"])
+            let holder = Task {
+                let grant = try await semaphore.acquire(count: 1)
+                await Task.yield()
+                _ = consume grant
+            }
+            let waiters = (0..<3).map { _ in Task { _ = try? await semaphore.acquire(count: 1) } }
+            if round % 2 == 0 { await Task.yield() }
+            for waiter in waiters { waiter.cancel() }
+            try await holder.value
+            for waiter in waiters { _ = await waiter.value }
+        }
+    }
 }
